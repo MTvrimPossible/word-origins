@@ -89,6 +89,11 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
+            // *** IMPORTANT ***
+            // 1. Get your free API key from Google AI Studio: https://aistudio.google.com/app/apikey
+            // 2. Paste your API key here.
+            const API_KEY = "AIzaSyCL7guXFxkfiv15dLQxIqN8hBrpoFtKS7A"; // <-- PASTE YOUR API KEY HERE
+
             const textInput = document.getElementById('text-input');
             const wordCountDisplay = document.getElementById('word-count');
             const analyzeBtn = document.getElementById('analyze-btn');
@@ -101,17 +106,23 @@
             const WORD_LIMIT = 1000;
             const wordCache = new Map();
             const languageColors = new Map();
+            
+            if (!API_KEY) {
+                showError("API key is missing. Please add your Gemini API key to the script to enable analysis.");
+                analyzeBtn.disabled = true;
+            }
 
             textInput.addEventListener('input', () => {
                 const words = textInput.value.trim().split(/\s+/).filter(Boolean);
                 wordCountDisplay.textContent = `${words.length} / ${WORD_LIMIT} words`;
+                
+                const isDisabled = words.length === 0 || words.length > WORD_LIMIT || !API_KEY;
+                analyzeBtn.disabled = isDisabled;
 
                 if (words.length > WORD_LIMIT) {
                     wordCountDisplay.classList.add('text-red-600', 'font-bold');
-                    analyzeBtn.disabled = true;
                 } else {
                     wordCountDisplay.classList.remove('text-red-600', 'font-bold');
-                    analyzeBtn.disabled = false;
                 }
             });
 
@@ -151,8 +162,7 @@
             async function fetchEtymologyForBatch(words) {
                 if (words.length === 0) return;
 
-                const apiKey = ""; // API key is handled by the environment
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`;
 
                 const systemPrompt = `You are an expert etymologist. Your task is to identify the primary language of origin and the root (lemma) form for a list of English words.
                 - For the given JSON array of words, return a single JSON object where each key is a word from the input.
@@ -218,7 +228,6 @@
                 
                 segments.forEach(segment => {
                     if (segment.trim().length === 0) {
-                        // This is whitespace, preserve it.
                         fragment.appendChild(document.createTextNode(segment));
                         return;
                     }
@@ -319,3 +328,4 @@
     </script>
 </body>
 </html>
+
