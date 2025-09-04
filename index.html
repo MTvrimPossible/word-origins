@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Etymology Highlighter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .highlight-word {
+            padding: 2px 4px;
+            border-radius: 4px;
+            color: #1f2937;
+            text-decoration: none;
+            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+            display: inline-block;
+        }
+        .highlight-word:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        #results-container a {
+            text-decoration: none;
+        }
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 4px solid #3498db;
+            width: 40px;
+            height: 40px;
+            animation: spin 2s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+    <div class="container mx-auto p-4 md:p-8 max-w-4xl">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-900">Etymology Highlighter</h1>
+            <p class="text-lg text-gray-600 mt-2">Paste your text below to see the historical origins of each word, powered by live web search.</p>
+        </header>
+
+        <main class="bg-white p-6 rounded-lg shadow-lg">
+            <div class="mb-6">
+                <label for="text-input" class="block text-lg font-medium text-gray-700 mb-2">Your Text</label>
+                <div class="relative">
+                    <textarea id="text-input" rows="10" class="w-full p-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition" placeholder="Example: The quick brown fox jumps over the lazy dog."></textarea>
+                    <div id="word-count" class="absolute bottom-3 right-4 text-sm text-gray-500">0 / 1000 words</div>
+                </div>
+            </div>
+
+            <div class="text-center">
+                <button id="analyze-btn" class="bg-blue-600 text-white font-bold py-3 px-8 rounded-lg hover:bg-blue-700 transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-300 disabled:bg-gray-400 disabled:cursor-not-allowed">
+                    Analyze Origins
+                </button>
+            </div>
+            
+            <div id="loader-container" class="hidden justify-center items-center py-8">
+                <div class="loader"></div>
+                 <p class="ml-4 text-gray-600">Performing live etymological analysis...</p>
+            </div>
+            
+            <div id="error-box" class="hidden mt-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg"></div>
+
+            <div id="results-section" class="mt-8 hidden">
+                <div class="border-t border-gray-200 pt-6">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4">Origin Percentages</h3>
+                    <div id="color-key" class="flex flex-wrap gap-x-4 gap-y-3 mb-6">
+                    </div>
+
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4">Highlighted Results</h3>
+                    <div id="results-container" class="p-6 bg-gray-50 rounded-lg border border-gray-200 leading-loose text-lg whitespace-pre-wrap">
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="text-center mt-8 text-gray-500 text-sm">
+            <p>Etymological data sourced on-the-fly using the Gemini API.</p>
+        </footer>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const textInput = document.getElementById('text-input');
+            const wordCountDisplay = document.getElementById('word-count');
+            const analyzeBtn = document.getElementById('analyze-btn');
+            const resultsSection = document.getElementById('results-section');
+            const resultsContainer = document.getElementById('results-container');
+            const colorKeyContainer = document.getElementById('color-key');
+            const loaderContainer = document.getElementById('loader-container');
+            const errorBox = document.getElementById('error-box');
+
+            const WORD_LIMIT = 1000;
+            const wordCache = new Map();
+            const languageColors = new Map();
+
+            textInput.addEventListener('input', () => {
+                const words = textInput.value.trim().split(/\s+/).filter(Boolean);
+                wordCountDisplay.textContent = `${words.length} / ${WORD_LIMIT} words`;
+
+                if (words.length > WORD_LIMIT) {
+                    wordCountDisplay.classList.add('text-red-600', 'font-bold');
+                    analyzeBtn.disabled = true;
+                } else {
+                    wordCountDisplay.classList.remove('text-red-600', 'font-bold');
+                    analyzeBtn.disabled = false;
+                }
+            });
+
+            analyzeBtn.addEventListener('click', handleAnalysis);
+
+            async function handleAnalysis() {
+                const text = textInput.value.trim();
+                if (!text) {
+                    showError('Please enter some text to analyze.');
+                    return;
+                }
+
+                showError(null);
+                setLoading(true);
+                wordCache.clear();
+                languageColors.clear();
+
+                const segments = text.split(/(\s+)/);
+                const words = segments.filter(segment => segment.trim().length > 0);
+                const uniqueWords = [...new Set(words.map(w => normalizeWord(w)))].filter(Boolean);
+
+                try {
+                    await fetchEtymologyForBatch(uniqueWords);
+                    renderResults(segments);
+                } catch (error) {
+                    console.error("Analysis failed:", error);
+                    showError(`An error occurred during analysis: ${error.message}. Check the console for details.`);
+                } finally {
+                    setLoading(false);
+                }
+            }
+
+            /**
+             * Fetches etymologies for a batch of words in a single Gemini API call.
+             * @param {string[]} words - An array of unique, normalized words.
+             */
+            async function fetchEtymologyForBatch(words) {
+                if (words.length === 0) return;
+
+                const apiKey = ""; // API key is handled by the environment
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+                const systemPrompt = `You are an expert etymologist. Your task is to identify the primary language of origin and the root (lemma) form for a list of English words.
+                - For the given JSON array of words, return a single JSON object where each key is a word from the input.
+                - The value for each key must be an object containing two properties: "origin" (the language) and "root" (the base form of the word).
+                - The response MUST be a valid JSON object, without any markdown formatting.
+                - Example input: ["running", "equations", "historical"]
+                - Example output: {"running": {"origin": "Old English", "root": "run"}, "equations": {"origin": "Latin", "root": "equation"}, "historical": {"origin": "Greek", "root": "history"}}
+                - If the origin is complex, provide the most direct one (e.g., French from Latin becomes "French").
+                - If the origin is unknown, use "Unknown/Other" for the origin and the word itself for the root.`;
+
+                const userQuery = JSON.stringify(words);
+
+                const payload = {
+                    contents: [{ parts: [{ text: userQuery }] }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] },
+                };
+
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        const errorBody = await response.text();
+                        console.error("API Error Body:", errorBody);
+                        throw new Error(`API request failed with status ${response.status}`);
+                    }
+
+                    const result = await response.json();
+                    let responseText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                    
+                    if (!responseText) {
+                        throw new Error("API returned an empty or invalid response.");
+                    }
+                    
+                    responseText = responseText.replace(/^```json\s*/, '').replace(/\s*```$/, '').trim();
+
+                    try {
+                        const origins = JSON.parse(responseText);
+                        for (const word in origins) {
+                            if (Object.prototype.hasOwnProperty.call(origins, word)) {
+                                wordCache.set(word, origins[word]); // Store the {origin, root} object
+                            }
+                        }
+                    } catch (jsonError) {
+                        console.error("Failed to parse JSON from API response. Raw text:", responseText);
+                        throw new Error("The API returned a response that was not valid JSON.");
+                    }
+                } catch (error) {
+                    console.error(`Failed to fetch origins for batch:`, error);
+                    words.forEach(word => wordCache.set(word, { origin: 'Unknown/Other', root: word }));
+                    throw error;
+                }
+            }
+
+            function renderResults(segments) {
+                const fragment = document.createDocumentFragment();
+                const foundOrigins = new Set();
+                const originCounts = new Map();
+                let totalWordCount = 0;
+                
+                segments.forEach(segment => {
+                    if (segment.trim().length === 0) {
+                        // This is whitespace, preserve it.
+                        fragment.appendChild(document.createTextNode(segment));
+                        return;
+                    }
+
+                    totalWordCount++;
+                    const originalWord = segment;
+                    const normalized = normalizeWord(originalWord);
+                    const defaultData = { origin: 'Unknown/Other', root: normalized };
+                    const originData = wordCache.get(normalized) || defaultData;
+                    
+                    const origin = originData.origin;
+                    const rootWord = originData.root;
+                    
+                    foundOrigins.add(origin);
+                    originCounts.set(origin, (originCounts.get(origin) || 0) + 1);
+
+                    const color = getColorForLanguage(origin);
+                    
+                    const link = document.createElement('a');
+                    link.href = `https://www.etymonline.com/word/${encodeURIComponent(rootWord)}`;
+                    link.target = '_blank';
+                    link.rel = 'noopener noreferrer';
+                    
+                    const span = document.createElement('span');
+                    span.className = 'highlight-word';
+                    span.style.backgroundColor = color;
+                    span.textContent = originalWord;
+                    span.title = `Origin: ${origin} (root: ${rootWord})`;
+
+                    link.appendChild(span);
+                    fragment.appendChild(link);
+                });
+
+                resultsContainer.innerHTML = '';
+                resultsContainer.appendChild(fragment);
+
+                renderColorKey(foundOrigins, originCounts, totalWordCount);
+                resultsSection.classList.remove('hidden');
+            }
+
+            function renderColorKey(origins, counts, total) {
+                colorKeyContainer.innerHTML = '';
+                const sortedOrigins = [...origins].sort();
+                sortedOrigins.forEach(origin => {
+                    const color = getColorForLanguage(origin);
+                    const count = counts.get(origin) || 0;
+                    const percentage = total > 0 ? ((count / total) * 100).toFixed(1) : 0;
+                    
+                    const keyItem = document.createElement('div');
+                    keyItem.className = 'flex items-center';
+                    keyItem.innerHTML = `
+                        <span class="w-4 h-4 rounded-full mr-2 border border-gray-300" style="background-color: ${color};"></span>
+                        <span class="text-sm font-medium">${origin} (${percentage}%)</span>
+                    `;
+                    colorKeyContainer.appendChild(keyItem);
+                });
+            }
+
+            function getColorForLanguage(language) {
+                if (languageColors.has(language)) {
+                    return languageColors.get(language);
+                }
+
+                let hash = 0;
+                for (let i = 0; i < language.length; i++) {
+                    hash = language.charCodeAt(i) + ((hash << 5) - hash);
+                }
+                
+                const h = hash % 360;
+                const s = 75;
+                const l = 85;
+                const color = `hsl(${h}, ${s}%, ${l}%)`;
+                
+                languageColors.set(language, color);
+                return color;
+            }
+
+            function normalizeWord(word) {
+                return word.toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()']/g,"");
+            }
+            
+            function setLoading(isLoading) {
+                analyzeBtn.classList.toggle('hidden', isLoading);
+                loaderContainer.classList.toggle('hidden', !isLoading);
+                loaderContainer.classList.toggle('flex', isLoading);
+                resultsSection.classList.toggle('hidden', isLoading);
+            }
+
+            function showError(message) {
+                if (message) {
+                    errorBox.textContent = message;
+                    errorBox.classList.remove('hidden');
+                } else {
+                    errorBox.classList.add('hidden');
+                }
+            }
+        });
+    </script>
+</body>
+</html>
